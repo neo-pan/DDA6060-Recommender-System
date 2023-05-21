@@ -1,3 +1,6 @@
+# DDA6060 Recommender System
+
+This is the codebase for our course project where we constructed a recommender system employing LightGCN architecture, tested on the benchmark MovieLens-100k dataset. Subsequently, we tyied to enhance its performance by an adversarial training approach known as AdvGraph.
 
 #### Update
 
