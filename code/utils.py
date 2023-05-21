@@ -54,12 +54,47 @@ def UniformSample_original(dataset, neg_ratio = 1):
     dataset : BasicDataset
     allPos = dataset.allPos
     start = time()
-    if sample_ext:
+    if sample_ext and False:
         S = sampling.sample_negative(dataset.n_users, dataset.m_items,
                                      dataset.trainDataSize, allPos, neg_ratio)
     else:
-        S = UniformSample_original_python(dataset)
+        S = structured_negative_sampling(dataset)
     return S
+
+
+def structured_negative_sampling(dataset):
+    total_start = time()
+    dataset : BasicDataset
+    num_nodes = dataset.m_items
+    user_num = dataset.trainDataSize
+    users = np.random.randint(0, dataset.n_users, user_num)
+    allPos = dataset.allPos
+
+    edge_index = []
+    for user in users:
+        pos_items = allPos[user]
+        if len(pos_items) > 0:  # make sure there's at least one positive item
+            item = random.choice(pos_items)
+            edge_index.append([user, item])
+    edge_index = np.array(edge_index).T
+    row, col = edge_index
+    pos_idx = row * num_nodes + col
+    rand = np.random.randint(num_nodes, size=row.shape[0])
+
+    neg_idx = row * num_nodes + rand
+
+    mask = np.isin(neg_idx, pos_idx)
+    rest = np.nonzero(mask)[0]
+
+    while rest.size > 0: 
+        tmp = np.random.randint(num_nodes, size=rest.size)
+        rand[rest] = tmp
+        neg_idx = row[rest] * num_nodes + tmp
+
+        mask = np.isin(neg_idx, pos_idx)
+        rest = rest[mask]
+    
+    return np.stack([row, col, rand], axis=1)
 
 def UniformSample_original_python(dataset):
     """
