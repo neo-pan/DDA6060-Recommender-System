@@ -14,6 +14,7 @@ from dataloader import BasicDataset
 from time import time
 from model import LightGCN
 from model import PairWiseModel
+import scipy.sparse as sp
 from sklearn.metrics import roc_auc_score
 import random
 import os
@@ -49,6 +50,25 @@ class BPRLoss:
 
         return loss.cpu().item()
 
+    def stageTwo(self, users, pos, neg, w):
+        U, mask = self.model.get_mask()
+        perturbed_graph = self.model.dataset.getPerturbedGraph(mask)
+        loss, reg_loss = self.model.bpr_loss(users, pos, neg, perturbed_graph)
+        reg_loss = reg_loss*self.weight_decay
+        loss_perturbed = loss + reg_loss
+        self.model.update_Phi(loss_perturbed, U, self.lr, w)
+
+        loss, reg_loss = self.model.bpr_loss(users, pos, neg)
+        reg_loss = reg_loss*self.weight_decay
+        loss_origin = loss + reg_loss
+
+        loss = loss_perturbed + loss_origin
+
+        self.opt.zero_grad()
+        loss.backward()
+        self.opt.step()
+
+        return loss.cpu().item()
 
 def UniformSample_original(dataset, neg_ratio = 1):
     dataset : BasicDataset
@@ -60,7 +80,6 @@ def UniformSample_original(dataset, neg_ratio = 1):
     else:
         S = structured_negative_sampling(dataset)
     return S
-
 
 def structured_negative_sampling(dataset):
     total_start = time()
@@ -95,6 +114,7 @@ def structured_negative_sampling(dataset):
         rest = rest[mask]
     
     return np.stack([row, col, rand], axis=1)
+
 
 def UniformSample_original_python(dataset):
     """
@@ -313,4 +333,55 @@ def getLabel(test_data, pred_data):
     return np.array(r).astype('float')
 
 # ====================end Metrics=============================
+# ====================AdvGraph==============================
+
+def create_complement_graph(adj_mat):
+    # Get the total number of nodes
+    num_nodes = adj_mat.shape[0]
+
+    # Create a full adjacency matrix
+    full_mat = np.ones((num_nodes, num_nodes))
+
+    # Remove the edges that exist in the original adjacency matrix
+    full_mat[adj_mat.nonzero()] = 0
+
+    # Convert the full matrix to a CSR format sparse matrix
+    full_mat = sp.csr_matrix(full_mat)
+
+    return full_mat
+
+def sample_subgraph(complement_mat, n_edges):
+    # Convert the complement graph to CSR format
+    csr_mat = complement_mat.tocsr()
+
+    # Get the indices of the non-zero elements
+    non_zero_indices = csr_mat.nonzero()
+
+    # Flatten the indices for sampling
+    flattened_indices = np.ravel_multi_index(non_zero_indices, (csr_mat.shape))
+
+    # Sample edges
+    sampled_indices = np.random.choice(flattened_indices, size=n_edges, replace=False)
+
+    # Get the row and column indices of the sampled edges
+    sampled_row_indices, sampled_col_indices = np.unravel_index(sampled_indices, (csr_mat.shape))
+
+    sampled_edges = np.stack((sampled_row_indices, sampled_col_indices), axis=0)
+
+    return sampled_edges
+
+def apply_mask(edges, mask, num_nodes):
+    # Filter edges according to the mask
+    mask = mask.cpu().numpy()
+    filtered_edges = edges[:, mask]
+
+    # Create a CSR matrix
+    adj_mat = sp.csr_matrix(
+        (np.ones(mask.sum()),
+        (filtered_edges[0], filtered_edges[1])), 
+        shape=(num_nodes, num_nodes),
+        dtype=np.float32)
+
+    return adj_mat
+# ====================end AdvGraph==============================
 # =========================================================

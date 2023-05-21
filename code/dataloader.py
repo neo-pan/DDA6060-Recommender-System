@@ -18,6 +18,7 @@ from scipy.sparse import csr_matrix
 import scipy.sparse as sp
 from sklearn.model_selection import train_test_split
 import world
+import utils
 from world import cprint
 from time import time
 
@@ -485,15 +486,13 @@ def data_split(user_mapping, movie_mapping, edge_index):
     #     test_indices, test_size=0.5, random_state=1)
 
     train_edge_index = edge_index[:, train_indices]
-    # val_edge_index = edge_index[:, val_indices]
     test_edge_index = edge_index[:, test_indices]
-    
-    return train_edge_index, test_edge_index
 
+    return train_edge_index, test_edge_index
 
 class MovieLens(BasicDataset):
 
-    
+
     def __init__(self,config = world.config,path="../data/ml-latest-small"):
         # train or test
         cprint(f'loading [{path}]')
@@ -518,6 +517,8 @@ class MovieLens(BasicDataset):
         self.traindataSize = train_edge_index.shape[1]
         self.testDataSize = test_edge_index.shape[1]
 
+        self.subgraph_num_edges = int(config['edge_budget'] * self.traindataSize)
+
         self.trainUser = train_edge_index[0]
         self.trainItem = train_edge_index[1]
 
@@ -528,6 +529,7 @@ class MovieLens(BasicDataset):
         self.testItem = test_edge_index[1]
         
         self.Graph = None
+        print(f"{self.m_item=}, {self.n_user=}")
         print(f"{self.trainDataSize} interactions for training")
         print(f"{self.testDataSize} interactions for testing")
         print(f"{world.dataset} Sparsity : {(self.trainDataSize + self.testDataSize) / self.n_users / self.m_items}")
@@ -577,6 +579,8 @@ class MovieLens(BasicDataset):
         if self.Graph is None:
             try:
                 pre_adj_mat = sp.load_npz(self.path + '/s_pre_adj_mat.npz')
+                self.adj_mat = sp.load_npz(self.path + '/s_raw_adj_mat.npz')
+                self.sampled_edges = np.load(self.path + '/s_sampled_edges.npz')['arr_0']
                 print("successfully loaded...")
                 norm_adj = pre_adj_mat
             except :
@@ -587,6 +591,11 @@ class MovieLens(BasicDataset):
                 R = self.UserItemNet.tolil()
                 adj_mat[:self.n_users, self.n_users:] = R
                 adj_mat[self.n_users:, :self.n_users] = R.T
+                adj_mat = adj_mat.tocsr()
+                sp.save_npz(self.path + '/s_raw_adj_mat.npz', adj_mat)
+                self.adj_mat = adj_mat
+                self.sampled_edges = self.sampleComplementarySubgraph()
+                np.savez(self.path + '/s_sampled_edges.npz', self.sampled_edges)
                 adj_mat = adj_mat.todok()
                 # adj_mat = adj_mat + sp.eye(adj_mat.shape[0])
                 
@@ -642,3 +651,28 @@ class MovieLens(BasicDataset):
         for user in users:
             posItems.append(self.UserItemNet[user].nonzero()[1])
         return posItems
+    
+    def sampleComplementarySubgraph(self):
+        complement_mat = utils.create_complement_graph(self.adj_mat)
+        sampled_edges = utils.sample_subgraph(complement_mat, self.subgraph_num_edges)
+
+        return sampled_edges
+
+    def getPerturbedGraph(self, mask):
+        delta = utils.apply_mask(self.sampled_edges, mask, self.n_users+self.m_items)
+        adj_mat = self.adj_mat + delta
+        adj_mat = adj_mat.todok()
+        
+        rowsum = np.array(adj_mat.sum(axis=1))
+        d_inv = np.power(rowsum, -0.5).flatten()
+        d_inv[np.isinf(d_inv)] = 0.
+        d_mat = sp.diags(d_inv)
+        
+        norm_adj = d_mat.dot(adj_mat)
+        norm_adj = norm_adj.dot(d_mat)
+        norm_adj = norm_adj.tocsr()
+
+        perturbed_graph = self._convert_sp_mat_to_sp_tensor(norm_adj)
+        perturbed_graph = perturbed_graph.coalesce().to(world.device)
+
+        return perturbed_graph

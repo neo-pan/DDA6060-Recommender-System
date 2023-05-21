@@ -46,7 +46,9 @@ config['decay'] = args.decay
 config['pretrain'] = args.pretrain
 config['A_split'] = False
 config['bigdata'] = False
-
+config['edge_budget'] = args.edge_budget
+# config['adv_start'] = args.epochs // 2
+config['adv_start'] = args.epochs // 2
 GPU = torch.cuda.is_available()
 device = torch.device('cuda' if GPU else "cpu")
 CORES = multiprocessing.cpu_count() // 2

@@ -24,7 +24,7 @@ class BasicModel(nn.Module):
 class PairWiseModel(BasicModel):
     def __init__(self):
         super(PairWiseModel, self).__init__()
-    def bpr_loss(self, users, pos, neg):
+    def bpr_loss(self, users, pos, neg, graph):
         """
         Parameters:
             users: users list 
@@ -112,7 +112,14 @@ class LightGCN(BasicModel):
             self.embedding_user.weight.data.copy_(torch.from_numpy(self.config['user_emb']))
             self.embedding_item.weight.data.copy_(torch.from_numpy(self.config['item_emb']))
             print('use pretarined data')
-        self.f = nn.Sigmoid()
+        self.f = self.sigmoid = nn.Sigmoid()
+
+        # AdvGraph
+        Phi = torch.zeros(self.dataset.subgraph_num_edges)
+        self.Phi = nn.Parameter(Phi)
+        self.Uniform = torch.distributions.Uniform(0, 1)
+        nn.init.normal_(self.Phi, std=0.1)
+
         self.Graph = self.dataset.getSparseGraph()
         print(f"lgn is already to go(dropout:{self.config['dropout']})")
 
@@ -137,7 +144,7 @@ class LightGCN(BasicModel):
             graph = self.__dropout_x(self.Graph, keep_prob)
         return graph
     
-    def computer(self):
+    def computer(self, graph=None):
         """
         propagate methods for lightGCN
         """       
@@ -146,14 +153,18 @@ class LightGCN(BasicModel):
         all_emb = torch.cat([users_emb, items_emb])
         #   torch.split(all_emb , [self.num_users, self.num_items])
         embs = [all_emb]
-        if self.config['dropout']:
-            if self.training:
-                print("droping")
-                g_droped = self.__dropout(self.keep_prob)
-            else:
-                g_droped = self.Graph        
+        # if self.config['dropout']:
+        #     if self.training:
+        #         print("droping")
+        #         g_droped = self.__dropout(self.keep_prob)
+        #     else:
+        #         g_droped = self.Graph        
+        # else:
+        #     g_droped = self.Graph    
+        if graph is not None:
+            g_droped = graph
         else:
-            g_droped = self.Graph    
+            g_droped = self.Graph
         
         for layer in range(self.n_layers):
             if self.A_split:
@@ -178,8 +189,8 @@ class LightGCN(BasicModel):
         rating = self.f(torch.matmul(users_emb, items_emb.t()))
         return rating
     
-    def getEmbedding(self, users, pos_items, neg_items):
-        all_users, all_items = self.computer()
+    def getEmbedding(self, users, pos_items, neg_items, graph=None):
+        all_users, all_items = self.computer(graph)
         users_emb = all_users[users]
         pos_emb = all_items[pos_items]
         neg_emb = all_items[neg_items]
@@ -188,9 +199,9 @@ class LightGCN(BasicModel):
         neg_emb_ego = self.embedding_item(neg_items)
         return users_emb, pos_emb, neg_emb, users_emb_ego, pos_emb_ego, neg_emb_ego
     
-    def bpr_loss(self, users, pos, neg):
+    def bpr_loss(self, users, pos, neg, graph=None):
         (users_emb, pos_emb, neg_emb, 
-        userEmb0,  posEmb0, negEmb0) = self.getEmbedding(users.long(), pos.long(), neg.long())
+        userEmb0,  posEmb0, negEmb0) = self.getEmbedding(users.long(), pos.long(), neg.long(), graph)
         reg_loss = (1/2)*(userEmb0.norm(2).pow(2) + 
                          posEmb0.norm(2).pow(2)  +
                          negEmb0.norm(2).pow(2))/float(len(users))
@@ -213,3 +224,22 @@ class LightGCN(BasicModel):
         inner_pro = torch.mul(users_emb, items_emb)
         gamma     = torch.sum(inner_pro, dim=1)
         return gamma
+
+    def get_mask(self):
+        U = self.Uniform.sample(self.Phi.size()).to(self.Phi.device)
+        mask = (U < self.sigmoid(self.Phi))
+
+        return U, mask
+    
+    def update_Phi(self, l_bpr, U, lr, w):
+        c = self.sigmoid(self.Phi)*(1-self.sigmoid(self.Phi))
+        c = c.sum()
+
+        gradient = l_bpr * (1 - 2 * U) - c
+
+        if world.tensorboard:
+            w.add_scalar(f'Phi/EstimatedGradient', gradient.mean())
+
+        self.Phi.data = self.Phi.data + lr * gradient
+
+        return
